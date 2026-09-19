@@ -28,8 +28,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 SYMBOL = "ETHUSDT"
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
-BINANCE_PRICE_URL = "https://api.binance.com/api/v3/ticker/price"
+BYBIT_KLINES_URL = "https://api.bybit.com/v5/market/kline"
+BYBIT_TICKER_URL = "https://api.bybit.com/v5/market/tickers"
 STATE_FILE = "state.json"
 
 TEHRAN = ZoneInfo("Asia/Tehran")
@@ -40,33 +40,47 @@ RISK_REWARD = 2  # TP = دو برابر فاصله‌ی SL تا Entry
 
 
 # ---------------------------------------------------------------------------
-# ابزارهای کمکی برای گرفتن داده از بایننس
+# ابزارهای کمکی برای گرفتن داده از Bybit
 # ---------------------------------------------------------------------------
+# Bybit بازه‌ی کندل رو به‌صورت عدد دقیقه یا "D" می‌خواد، نه "15m"/"1h"
+INTERVAL_MAP = {"15m": "15", "1h": "60"}
+
+
 def fetch_klines(interval, limit):
     resp = requests.get(
-        BINANCE_KLINES_URL,
-        params={"symbol": SYMBOL, "interval": interval, "limit": limit},
+        BYBIT_KLINES_URL,
+        params={
+            "category": "linear",
+            "symbol": SYMBOL,
+            "interval": INTERVAL_MAP[interval],
+            "limit": limit,
+        },
         timeout=15,
     )
     resp.raise_for_status()
-    raw = resp.json()
+    raw = resp.json()["result"]["list"]  # Bybit جدیدترین کندل رو اول لیست می‌ده
     candles = []
-    for k in raw:
+    for k in reversed(raw):  # برگردوندن به ترتیب زمانی صعودی
+        open_time = datetime.fromtimestamp(int(k[0]) / 1000, tz=timezone.utc)
         candles.append({
-            "open_time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+            "open_time": open_time,
             "open": float(k[1]),
             "high": float(k[2]),
             "low": float(k[3]),
             "close": float(k[4]),
-            "close_time": datetime.fromtimestamp(k[6] / 1000, tz=timezone.utc),
+            "close_time": open_time,  # برای چک "بسته‌شده بودن" کافیه
         })
     return candles
 
 
 def fetch_current_price():
-    resp = requests.get(BINANCE_PRICE_URL, params={"symbol": SYMBOL}, timeout=15)
+    resp = requests.get(
+        BYBIT_TICKER_URL,
+        params={"category": "linear", "symbol": SYMBOL},
+        timeout=15,
+    )
     resp.raise_for_status()
-    return float(resp.json()["price"])
+    return float(resp.json()["result"]["list"][0]["lastPrice"])
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +202,13 @@ def main():
     box = state["box"]
 
     if state["status"] == "waiting":
-        # آخرین کندل ۱۵ دقیقه‌ای کامل (بسته‌شده) رو بررسی کن
-        candles = fetch_klines("15m", 3)
-        closed_candles = [c for c in candles if c["close_time"] <= datetime.now(timezone.utc)]
-        if not closed_candles:
+        # آخرین کندل ۱۵ دقیقه‌ای کامل (بسته‌شده) رو بررسی کن.
+        # کندل آخر تو لیست بایبیت معمولاً هنوز در حال شکل‌گیریه، پس نادیده‌ش می‌گیریم.
+        candles = fetch_klines("15m", 4)
+        if len(candles) < 2:
             save_state(state)
             return
-        last = closed_candles[-1]
+        last = candles[-2]
 
         inside_box = box["box_bottom"] <= last["low"] and last["high"] <= box["box_top"]
         if inside_box:

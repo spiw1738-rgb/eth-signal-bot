@@ -1,0 +1,40 @@
+name: Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "چند روز گذشته بررسی بشه"
+        default: "90"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest
+        env:
+          BACKTEST_DAYS: ${{ github.event.inputs.days }}
+        run: python backtest.py
+
+      - name: Save results back to the repo
+        run: |
+          git config user.name "eth-signal-bot"
+          git config user.email "actions@github.com"
+          git add backtest_results.md
+          git diff --staged --quiet || git commit -m "Update backtest results"
+          git push

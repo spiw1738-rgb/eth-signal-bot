@@ -1,4 +1,10 @@
 {
   "date": "2026-09-27",
-  "status": "waiting"
+  "status": "waiting",
+  "box": {
+    "box_top": 2679.045,
+    "box_bottom": 2675.12858,
+    "day_high": 2695.64,
+    "day_low": 2662.45
+  }
 }

@@ -94,8 +94,9 @@ def calculate_box_from_candles(day_candles):
     day_high = max(c["high"] for c in day_candles)
     day_low = min(c["low"] for c in day_candles)
     diff = day_high - day_low
-    fib_050 = day_high - 0.5 * diff
-    fib_0618 = day_high - 0.618 * diff
+    # باکس همیشه از کف روز به سمت بالا اندازه‌گیری می‌شه (بدون توجه به جهت روز قبل)
+    fib_050 = day_low + 0.5 * diff
+    fib_0618 = day_low + 0.618 * diff
     return {"box_top": max(fib_050, fib_0618), "box_bottom": min(fib_050, fib_0618)}
 
 

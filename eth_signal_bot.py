@@ -27,9 +27,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-SYMBOL = "ETHUSDT"
-BYBIT_KLINES_URL = "https://api.bybit.com/v5/market/kline"
-BYBIT_TICKER_URL = "https://api.bybit.com/v5/market/tickers"
+FSYM = "ETH"
+TSYM = "USDT"
+CC_HISTOHOUR_URL = "https://min-api.cryptocompare.com/data/v2/histohour"
+CC_HISTOMINUTE_URL = "https://min-api.cryptocompare.com/data/v2/histominute"
+CC_PRICE_URL = "https://min-api.cryptocompare.com/data/price"
 STATE_FILE = "state.json"
 
 TEHRAN = ZoneInfo("Asia/Tehran")
@@ -40,47 +42,40 @@ RISK_REWARD = 2  # TP = دو برابر فاصله‌ی SL تا Entry
 
 
 # ---------------------------------------------------------------------------
-# ابزارهای کمکی برای گرفتن داده از Bybit
+# ابزارهای کمکی برای گرفتن داده از CryptoCompare
 # ---------------------------------------------------------------------------
-# Bybit بازه‌ی کندل رو به‌صورت عدد دقیقه یا "D" می‌خواد، نه "15m"/"1h"
-INTERVAL_MAP = {"15m": "15", "1h": "60"}
-
-
 def fetch_klines(interval, limit):
-    resp = requests.get(
-        BYBIT_KLINES_URL,
-        params={
-            "category": "linear",
-            "symbol": SYMBOL,
-            "interval": INTERVAL_MAP[interval],
-            "limit": limit,
-        },
-        timeout=15,
-    )
+    """interval: '1h' یا '15m'. آخرین آیتم لیست ممکنه هنوز کامل نشده باشه."""
+    if interval == "1h":
+        url = CC_HISTOHOUR_URL
+        params = {"fsym": FSYM, "tsym": TSYM, "limit": limit}
+    else:
+        url = CC_HISTOMINUTE_URL
+        params = {"fsym": FSYM, "tsym": TSYM, "aggregate": 15, "limit": limit}
+
+    resp = requests.get(url, params=params, timeout=15)
     resp.raise_for_status()
-    raw = resp.json()["result"]["list"]  # Bybit جدیدترین کندل رو اول لیست می‌ده
+    data = resp.json()
+    if data.get("Response") == "Error":
+        raise RuntimeError(data.get("Message", "CryptoCompare error"))
+
     candles = []
-    for k in reversed(raw):  # برگردوندن به ترتیب زمانی صعودی
-        open_time = datetime.fromtimestamp(int(k[0]) / 1000, tz=timezone.utc)
+    for k in data["Data"]["Data"]:
+        open_time = datetime.fromtimestamp(k["time"], tz=timezone.utc)
         candles.append({
             "open_time": open_time,
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "close_time": open_time,  # برای چک "بسته‌شده بودن" کافیه
+            "open": float(k["open"]),
+            "high": float(k["high"]),
+            "low": float(k["low"]),
+            "close": float(k["close"]),
         })
-    return candles
+    return candles  # CryptoCompare همیشه به ترتیب زمانی صعودی برمی‌گردونه
 
 
 def fetch_current_price():
-    resp = requests.get(
-        BYBIT_TICKER_URL,
-        params={"category": "linear", "symbol": SYMBOL},
-        timeout=15,
-    )
+    resp = requests.get(CC_PRICE_URL, params={"fsym": FSYM, "tsyms": TSYM}, timeout=15)
     resp.raise_for_status()
-    return float(resp.json()["result"]["list"][0]["lastPrice"])
+    return float(resp.json()[TSYM])
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +92,6 @@ def get_previous_tehran_day_bounds(now_tehran):
 def calculate_box(now_tehran):
     """سقف/کف روز قبل رو با کندل‌های ۱ ساعته می‌گیره و باکس ۰.۵-۰.۶۱۸ رو حساب می‌کنه."""
     start_utc, end_utc = get_previous_tehran_day_bounds(now_tehran)
-    # کندل ۱ ساعته برای پوشش کامل ۲۴ ساعت دیروز (حداکثر ۲۴ کندل کافیه)
     candles = fetch_klines("1h", 30)
     day_candles = [c for c in candles if start_utc <= c["open_time"] < end_utc]
     if not day_candles:
@@ -107,8 +101,9 @@ def calculate_box(now_tehran):
     day_low = min(c["low"] for c in day_candles)
     diff = day_high - day_low
 
-    fib_050 = day_high - 0.5 * diff
-    fib_0618 = day_high - 0.618 * diff
+    # باکس همیشه از کف روز به سمت بالا اندازه‌گیری می‌شه (بدون توجه به جهت روز قبل)
+    fib_050 = day_low + 0.5 * diff
+    fib_0618 = day_low + 0.618 * diff
 
     box_top = max(fib_050, fib_0618)
     box_bottom = min(fib_050, fib_0618)
@@ -172,11 +167,9 @@ def main():
     today_str = now_tehran.strftime("%Y-%m-%d")
     state = load_state()
 
-    # اگه روز عوض شده، وضعیت رو ریست کن و باکس جدید بساز
     if state.get("date") != today_str:
         state = {"date": today_str, "status": "waiting"}
 
-    # قبل از شروع همپوشانی توکیو-لندن، کاری نکن
     overlap_start = now_tehran.replace(
         hour=OVERLAP_START_HOUR, minute=OVERLAP_START_MINUTE, second=0, microsecond=0
     )
@@ -185,12 +178,10 @@ def main():
         save_state(state)
         return
 
-    # اگه امروز قبلاً سیگنال داده شده، دیگه کاری نکن
     if state.get("status") == "signaled":
         print("✅ امروز قبلاً سیگنال صادر شده.")
         return
 
-    # باکس رو (اگه هنوز محاسبه نشده) بساز
     if "box" not in state:
         box = calculate_box(now_tehran)
         if box is None:
@@ -202,8 +193,7 @@ def main():
     box = state["box"]
 
     if state["status"] == "waiting":
-        # آخرین کندل ۱۵ دقیقه‌ای کامل (بسته‌شده) رو بررسی کن.
-        # کندل آخر تو لیست بایبیت معمولاً هنوز در حال شکل‌گیریه، پس نادیده‌ش می‌گیریم.
+        # آخرین کندل ۱۵ دقیقه‌ای کامل رو بررسی کن؛ آخرین آیتم لیست هنوز کامل نشده، نادیده‌ش می‌گیریم.
         candles = fetch_klines("15m", 4)
         if len(candles) < 2:
             save_state(state)
@@ -223,8 +213,6 @@ def main():
         price = fetch_current_price()
         entry_direction = state["entry_candle_direction"]
 
-        # اگه کندل ورودی صعودی بود، دنبال خروج نزولی (زیر باکس) می‌گردیم → سیگنال فروش
-        # اگه کندل ورودی نزولی بود، دنبال خروج صعودی (بالای باکس) می‌گردیم → سیگنال خرید
         signal_direction = None
         if entry_direction == "bullish" and price < box["box_bottom"]:
             signal_direction = "SHORT"
